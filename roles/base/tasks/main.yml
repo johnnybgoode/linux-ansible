@@ -27,7 +27,9 @@
       - curl
       - wget
       - git
-      - vim
+      - neovim
+      - python3
+      - python3-venv
       - build-essential
       - ca-certificates
       - gnupg
@@ -35,7 +37,15 @@
       - unattended-upgrades
       - apt-listchanges
       - ufw
+      - htop
+      - jq
+      - zsh
     state: present
+
+- name: Set zsh as default shell for {{ target_user }}
+  user:
+    name: "{{ target_user }}"
+    shell: /usr/bin/zsh
 
 - name: Configure unattended upgrades
   copy:
@@ -59,12 +69,19 @@
       APT::Periodic::Update-Package-Lists "1";
       APT::Periodic::Unattended-Upgrade "1";
 
-- name: Enable UFW and allow SSH
+- name: Allow SSH through UFW
   ufw:
     rule: allow
     name: OpenSSH
 
-- name: Enable UFW
+- name: Allow Tailscale UDP port through UFW
+  ufw:
+    rule: allow
+    port: "41641"
+    proto: udp
+    comment: Tailscale direct connections
+
+- name: Enable UFW with default deny incoming
   ufw:
     state: enabled
     policy: deny
@@ -76,7 +93,7 @@
     state: stopped
     enabled: false
     masked: true
-  ignore_errors: true  # may not be running if already removed
+  ignore_errors: true
 
 - name: Remove snapd
   apt:

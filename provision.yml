@@ -4,6 +4,13 @@
   connection: local
   become: true
 
+  vars:
+    # lookup('env', ...) reads from the controller process (the user who
+    # ran ansible-playbook), so it resolves to the real unprivileged user
+    # even though become: true elevates tasks to root.
+    target_user: "{{ lookup('env', 'USER') }}"
+    target_home: "{{ lookup('env', 'HOME') }}"
+
   vars_files:
     - group_vars/vault.yml
 
@@ -11,7 +18,6 @@
     - base
     - ssh
     - tailscale
-    - docker
     - node
     - tmux
     - dotfiles

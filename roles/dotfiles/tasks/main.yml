@@ -1,0 +1,39 @@
+---
+- name: Create ~/.skel directory
+  file:
+    path: "{{ target_home }}/.skel"
+    state: directory
+    owner: "{{ target_user }}"
+    mode: '0755'
+
+- name: Clone dotfiles repo
+  become: true
+  become_user: "{{ target_user }}"
+  git:
+    repo: https://github.com/johnnybgoode/dotfiles.git
+    dest: "{{ target_home }}/.skel/dotfiles"
+    update: true
+
+- name: Clone vimfiles repo
+  become: true
+  become_user: "{{ target_user }}"
+  git:
+    repo: https://github.com/johnnybgoode/vimfiles.git
+    dest: "{{ target_home }}/.skel/vimfiles"
+    update: true
+
+- name: Run dotfiles move-in.sh
+  become: true
+  become_user: "{{ target_user }}"
+  shell: bash move-in.sh
+  args:
+    chdir: "{{ target_home }}/.skel/dotfiles"
+    executable: /bin/bash
+
+- name: Run vimfiles move-in.sh
+  become: true
+  become_user: "{{ target_user }}"
+  shell: bash move-in.sh
+  args:
+    chdir: "{{ target_home }}/.skel/vimfiles"
+    executable: /bin/bash

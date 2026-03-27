@@ -15,12 +15,9 @@ sudo add-apt-repository -y ppa:ansible/ansible
 sudo apt-get update -qq
 sudo apt-get install -y ansible
 
-echo "==> Decrypting vault and running playbook..."
+echo "==> Running playbook..."
 # You will be prompted for the vault password.
-ansible-playbook provision.yml \
-  --ask-vault-pass \
-  --connection local \
-  -i localhost,
+ansible-playbook provision.yml --ask-vault-pass
 
 echo ""
-echo "==> Done. Log out and back in for group membership changes (docker) to take effect."
+echo "==> Done. Log out and back in for shell profile changes to take effect."

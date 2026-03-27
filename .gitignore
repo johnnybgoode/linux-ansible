@@ -1,3 +1,6 @@
-# Prevent accidentally committing a plaintext vault file.
-# Once encrypted with ansible-vault, it's safe to remove this line.
+# Encrypted vault is safe to commit; this prevents committing a
+# plaintext vault.  Remove this line once vault is encrypted.
 group_vars/vault.yml
+
+# Generated output from earlier iterations
+mnt/

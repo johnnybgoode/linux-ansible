@@ -1,0 +1,29 @@
+---
+- name: Install nvm
+  become: true
+  become_user: "{{ target_user }}"
+  shell: |
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+  args:
+    creates: "{{ target_home }}/.nvm/nvm.sh"
+
+- name: Install Node.js LTS via nvm
+  become: true
+  become_user: "{{ target_user }}"
+  shell: |
+    export NVM_DIR="{{ target_home }}/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    nvm install --lts
+    nvm alias default lts/*
+  args:
+    executable: /bin/bash
+
+- name: Install Claude Code globally
+  become: true
+  become_user: "{{ target_user }}"
+  shell: |
+    export NVM_DIR="{{ target_home }}/.nvm"
+    . "$NVM_DIR/nvm.sh"
+    npm install -g @anthropic-ai/claude-code
+  args:
+    executable: /bin/bash
