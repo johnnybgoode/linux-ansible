@@ -1,0 +1,104 @@
+---
+- name: Set locale
+  locale_gen:
+    name: en_US.UTF-8
+    state: present
+
+- name: Set default locale
+  copy:
+    dest: /etc/default/locale
+    content: |
+      LANG=en_US.UTF-8
+      LC_ALL=en_US.UTF-8
+
+- name: Set timezone
+  timezone:
+    name: UTC
+
+- name: Update apt cache and upgrade packages
+  apt:
+    update_cache: true
+    upgrade: dist
+    cache_valid_time: 3600
+
+- name: Install base packages
+  apt:
+    name:
+      - curl
+      - wget
+      - git
+      - vim
+      - build-essential
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - unattended-upgrades
+      - apt-listchanges
+      - ufw
+    state: present
+
+- name: Configure unattended upgrades
+  copy:
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}";
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+      Unattended-Upgrade::MinimalSteps "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "false";
+
+- name: Enable unattended upgrades
+  copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+- name: Enable UFW and allow SSH
+  ufw:
+    rule: allow
+    name: OpenSSH
+
+- name: Enable UFW
+  ufw:
+    state: enabled
+    policy: deny
+    direction: incoming
+
+- name: Stop and disable snapd
+  systemd:
+    name: snapd
+    state: stopped
+    enabled: false
+    masked: true
+  ignore_errors: true  # may not be running if already removed
+
+- name: Remove snapd
+  apt:
+    name: snapd
+    state: absent
+    purge: true
+
+- name: Remove snap directories
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /snap
+    - /var/snap
+    - /var/lib/snapd
+    - /var/cache/snapd
+    - /root/snap
+
+- name: Pin snapd to prevent reinstall
+  copy:
+    dest: /etc/apt/preferences.d/no-snapd
+    content: |
+      Package: snapd
+      Pin: release a=*
+      Pin-Priority: -10

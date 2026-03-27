@@ -1,0 +1,17 @@
+---
+- name: Provision Ubuntu server
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars_files:
+    - group_vars/vault.yml
+
+  roles:
+    - base
+    - ssh
+    - tailscale
+    - docker
+    - node
+    - tmux
+    - dotfiles

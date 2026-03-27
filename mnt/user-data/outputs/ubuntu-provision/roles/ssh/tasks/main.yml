@@ -1,0 +1,29 @@
+---
+# Ensure at least one sudo user with an authorized key exists before
+# running this role, or you will lock yourself out.
+
+- name: Harden sshd_config
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+    validate: sshd -t -f %s
+  loop:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+    - { regexp: '^#?UsePAM', line: 'UsePAM yes' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+    - { regexp: '^#?PrintMotd', line: 'PrintMotd no' }
+    - { regexp: '^#?AcceptEnv', line: 'AcceptEnv LANG LC_*' }
+  notify: Restart sshd
+
+- name: Flush handlers
+  meta: flush_handlers
+
+handlers:
+  - name: Restart sshd
+    systemd:
+      name: ssh
+      state: restarted

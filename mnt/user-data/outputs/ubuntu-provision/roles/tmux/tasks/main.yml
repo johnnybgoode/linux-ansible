@@ -1,0 +1,54 @@
+---
+- name: Install tmux
+  apt:
+    name: tmux
+    state: present
+
+- name: Get real user home directory
+  getent:
+    database: passwd
+    key: "{{ ansible_user_id }}"
+  register: user_info
+
+- name: Set user home fact
+  set_fact:
+    real_user_home: "{{ user_info.ansible_facts.getent_passwd[ansible_user_id][4] }}"
+
+# Only writes a minimal tmux.conf if one doesn't already exist.
+# The dotfiles role may overwrite this if your dotfiles include a tmux.conf.
+- name: Write base tmux.conf (skipped if already present)
+  copy:
+    dest: "{{ real_user_home }}/.tmux.conf"
+    force: false
+    owner: "{{ ansible_user_id }}"
+    mode: '0644'
+    content: |
+      # use C-a as prefix
+      unbind C-b
+      set -g prefix C-a
+      bind C-a send-prefix
+
+      # true colour support
+      set -g default-terminal "tmux-256color"
+      set -sa terminal-overrides ",*256col*:Tc"
+
+      # UTF-8
+      set -q -g utf8 on
+      setw -q -g utf8 on
+
+      # start windows and panes at 1
+      set -g base-index 1
+      setw -g pane-base-index 1
+      set -g renumber-windows on
+
+      # increase scrollback
+      set -g history-limit 10000
+
+      # mouse support
+      set -g mouse on
+
+      # don't rename windows automatically
+      set -g allow-rename off
+
+      # reload config
+      bind r source-file ~/.tmux.conf \; display "Reloaded"
