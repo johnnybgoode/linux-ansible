@@ -17,7 +17,7 @@ sudo apt-get install -y ansible
 
 echo "==> Running playbook..."
 # You will be prompted for the vault password.
-ansible-playbook provision.yml --ask-vault-pass
+ansible-playbook provision.yml --ask-vault-pass --ask-become-pass
 
 echo ""
 echo "==> Done. Log out and back in for shell profile changes to take effect."

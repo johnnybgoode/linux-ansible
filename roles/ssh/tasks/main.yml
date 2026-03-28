@@ -2,6 +2,12 @@
 # Ensure at least one sudo user with an authorized key exists before
 # running this role, or you will lock yourself out.
 
+- name: Ensure /run/sshd exists
+  file:
+    path: /run/sshd
+    state: directory
+    mode: '0755'
+
 - name: Harden sshd_config
   lineinfile:
     path: /etc/ssh/sshd_config
