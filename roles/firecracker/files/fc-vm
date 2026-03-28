@@ -231,6 +231,11 @@ GETTY
       sudo chroot "$mnt" bash -c 'id sshd &>/dev/null || useradd -r -s /bin/false -d /var/empty/sshd sshd'
       sudo mkdir -p "$mnt/run/sshd"
 
+      # Allow root login: unlock account (no password) and permit in sshd
+      sudo chroot "$mnt" passwd -d root
+      sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' "$mnt/etc/ssh/sshd_config"
+      sudo sed -i 's/^#*PermitEmptyPasswords.*/PermitEmptyPasswords no/' "$mnt/etc/ssh/sshd_config"
+
       # Ensure locale is available
       if sudo chroot "$mnt" which locale-gen &>/dev/null; then
         sudo chroot "$mnt" locale-gen en_US.UTF-8 2>/dev/null || true
@@ -300,8 +305,15 @@ RELAY
 # Mount essential filesystems
 mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
-mount -t devpts devpts /dev/pts 2>/dev/null
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts -o gid=5,mode=620,ptmxmode=000 2>/dev/null
+# Ensure /dev/ptmx points to the devpts multiplexer
+ln -sf pts/ptmx /dev/ptmx 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
 mkdir -p /run/sshd
+
+# Set hostname
+hostname -F /etc/hostname 2>/dev/null
 
 # Start SSH server
 /usr/sbin/sshd
