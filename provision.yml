@@ -19,6 +19,7 @@
     - ssh
     - tailscale
     - neovim
+    - docker
     - firecracker
     - node
     - tmux
