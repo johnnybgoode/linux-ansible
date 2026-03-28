@@ -212,6 +212,32 @@ GETTY
         echo 'ttyS0' | sudo tee -a "$mnt/etc/securetty" >/dev/null
       fi
 
+      # Set up SSH server in the rootfs via chroot
+      # Bind-mount /dev and /proc for chroot operations
+      sudo mount --bind /dev "$mnt/dev"
+      sudo mount --bind /proc "$mnt/proc"
+      sudo mount -t sysfs sysfs "$mnt/sys"
+
+      if ! sudo chroot "$mnt" dpkg -s openssh-server &>/dev/null; then
+        echo "Installing openssh-server in rootfs..."
+        sudo chroot "$mnt" apt-get update -qq
+        sudo chroot "$mnt" apt-get install -y -qq openssh-server
+      fi
+
+      # Generate SSH host keys
+      sudo chroot "$mnt" ssh-keygen -A
+
+      # Ensure sshd user and privilege separation dir exist
+      sudo chroot "$mnt" bash -c 'id sshd &>/dev/null || useradd -r -s /bin/false -d /var/empty/sshd sshd'
+      sudo mkdir -p "$mnt/run/sshd"
+
+      # Ensure locale is available
+      if sudo chroot "$mnt" which locale-gen &>/dev/null; then
+        sudo chroot "$mnt" locale-gen en_US.UTF-8 2>/dev/null || true
+      fi
+
+      sudo umount "$mnt/sys" "$mnt/proc" "$mnt/dev"
+
       # Bake SSH public key for vsock access
       if [[ -f "$FC_SSH_PUBKEY" ]]; then
         sudo mkdir -p "$mnt/root/.ssh"
@@ -226,25 +252,19 @@ GETTY
       fi
 
       # Install vsock-to-SSH relay (bridges vsock port 22 to sshd)
-      # Uses python3 to avoid socat dependency in the guest
       sudo tee "$mnt/usr/local/bin/vsock-ssh-relay" >/dev/null <<'RELAY'
 #!/usr/bin/env python3
 """Relay connections from vsock port 22 to localhost:22 (sshd)."""
-import socket, os, select, sys, signal
-
-VSOCK_PORT = 22
-SSH_PORT = 22
+import socket, os, select, signal
 
 def relay(client):
-    """Bidirectional relay between vsock client and local sshd."""
     pid = os.fork()
     if pid:
         client.close()
         return
-    # Child process handles this connection
     try:
         target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        target.connect(("127.0.0.1", SSH_PORT))
+        target.connect(("127.0.0.1", 22))
         client.setblocking(False)
         target.setblocking(False)
         fds = [client, target]
@@ -254,8 +274,7 @@ def relay(client):
                 data = fd.recv(65536)
                 if not data:
                     raise ConnectionError
-                dest = target if fd == client else client
-                dest.sendall(data)
+                (target if fd == client else client).sendall(data)
     except (ConnectionError, OSError):
         pass
     finally:
@@ -266,7 +285,7 @@ def relay(client):
 signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-sock.bind((socket.VMADDR_CID_ANY, VSOCK_PORT))
+sock.bind((socket.VMADDR_CID_ANY, 22))
 sock.listen(8)
 while True:
     client, _ = sock.accept()
@@ -274,25 +293,36 @@ while True:
 RELAY
       sudo chmod 755 "$mnt/usr/local/bin/vsock-ssh-relay"
 
-      # Systemd service for the relay
-      sudo mkdir -p "$mnt/etc/systemd/system/multi-user.target.wants"
-      sudo tee "$mnt/etc/systemd/system/vsock-ssh-relay.service" >/dev/null <<'VSOCK'
-[Unit]
-Description=vsock to SSH relay
-After=ssh.service sshd.service
-Wants=ssh.service
+      # Install init script that starts sshd + vsock relay
+      # (systemd doesn't work properly in Docker-exported rootfs)
+      sudo tee "$mnt/etc/rc.local" >/dev/null <<'INIT'
+#!/bin/bash
+# Mount essential filesystems
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devpts devpts /dev/pts 2>/dev/null
+mkdir -p /run/sshd
 
-[Service]
-ExecStart=/usr/local/bin/vsock-ssh-relay
-Restart=always
-RestartSec=1
+# Start SSH server
+/usr/sbin/sshd
 
-[Install]
-WantedBy=multi-user.target
-VSOCK
-      sudo ln -sf ../vsock-ssh-relay.service \
-        "$mnt/etc/systemd/system/multi-user.target.wants/vsock-ssh-relay.service"
-      echo "Installed vsock-ssh-relay service"
+# Start vsock-to-SSH relay
+/usr/local/bin/vsock-ssh-relay &
+
+# Drop to a shell on the serial console
+exec /sbin/getty -L ttyS0 115200 vt100
+INIT
+      sudo chmod 755 "$mnt/etc/rc.local"
+
+      # Point init at rc.local since systemd won't work
+      # The kernel will try /sbin/init (systemd) first — if it fails,
+      # we add rc.local to boot_args as init= fallback
+      sudo tee "$mnt/sbin/fc-init" >/dev/null <<'FCINIT'
+#!/bin/bash
+exec /etc/rc.local
+FCINIT
+      sudo chmod 755 "$mnt/sbin/fc-init"
+      echo "Installed fc-init boot script (sshd + vsock relay + getty)"
 
       sudo umount "$mnt"
       rmdir "$mnt"
@@ -405,6 +435,14 @@ cmd_start() {
   local tmp
   tmp=$(jq ".vsock = {\"guest_cid\": $cid, \"uds_path\": \"$vsock_path\"}" "$runtime_config")
   echo "$tmp" >"$runtime_config"
+
+  # Ensure init=/sbin/fc-init is in boot_args
+  local current_args
+  current_args=$(jq -r '.["boot-source"].boot_args' "$runtime_config")
+  if [[ "$current_args" != *"init="* ]]; then
+    tmp=$(jq ".\"boot-source\".boot_args = \"$current_args init=/sbin/fc-init\"" "$runtime_config")
+    echo "$tmp" >"$runtime_config"
+  fi
 
   # Set up tap devices for each network interface in the config
   local iface_count
