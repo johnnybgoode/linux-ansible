@@ -12,6 +12,7 @@
   git:
     repo: https://github.com/johnnybgoode/dotfiles.git
     dest: "{{ target_home }}/.skel/dotfiles"
+    version: updates
     update: true
 
 - name: Clone vimfiles repo
@@ -20,6 +21,7 @@
   git:
     repo: https://github.com/johnnybgoode/vimfiles.git
     dest: "{{ target_home }}/.skel/vimfiles"
+    version: nvim-update
     update: true
 
 - name: Run dotfiles move-in.sh
