@@ -134,10 +134,20 @@
     group: root
     mode: '0755'
 
-- name: Create firecracker working directory
+- name: Create firecracker directories
   file:
-    path: /opt/firecracker
+    path: "{{ item }}"
     state: directory
     owner: "{{ target_user }}"
     group: "{{ target_user }}"
+    mode: '0755'
+  loop:
+    - /opt/firecracker
+    - /opt/firecracker/kernel
+    - /opt/firecracker/vms
+
+- name: Install fc-vm lifecycle script
+  copy:
+    src: fc-vm
+    dest: /usr/local/bin/fc-vm
     mode: '0755'
