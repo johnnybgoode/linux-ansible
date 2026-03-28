@@ -172,169 +172,44 @@ cmd_build() {
     mkfs.ext4 -F "$path"
 
     if [[ "$is_root" == "true" ]]; then
-      # Populate root drive from Docker image
+      # Build a Firecracker-ready rootfs using Docker
+      local dockerfile_dir="$FC_BASE/guest"
+      if [[ ! -f "$dockerfile_dir/Dockerfile" ]]; then
+        echo "Error: guest Dockerfile not found at $dockerfile_dir/"
+        echo "Run the Ansible playbook to install it."
+        exit 1
+      fi
+
+      # Read SSH pubkey for build arg
+      local ssh_pubkey=""
+      if [[ -f "$FC_SSH_PUBKEY" ]]; then
+        ssh_pubkey=$(cat "$FC_SSH_PUBKEY")
+      else
+        echo "Warning: SSH pubkey not found at $FC_SSH_PUBKEY — vsock connect won't work"
+      fi
+
+      # Build the Docker image with guest scripts baked in
+      local tag="fc-rootfs:$(echo "$image" | tr '/:' '-')"
+      echo "Building rootfs image ($tag)..."
+      docker build -q \
+        --build-arg "BASE_IMAGE=$image" \
+        --build-arg "SSH_PUBKEY=$ssh_pubkey" \
+        -t "$tag" \
+        "$dockerfile_dir"
+
+      # Export to ext4
       local mnt
       mnt=$(mktemp -d)
-      local cid
-      cid=$(docker create "$image")
+      local container_id
+      container_id=$(docker create "$tag")
       sudo mount "$path" "$mnt"
-      docker export "$cid" | sudo tar -xf - -C "$mnt"
-      docker rm "$cid" >/dev/null
+      docker export "$container_id" | sudo tar -xf - -C "$mnt"
+      docker rm "$container_id" >/dev/null
 
-      # Basic guest setup
+      # Set hostname from drive_id
       local drive_id
       drive_id=$(jq -r ".drives[$i].drive_id" "$config")
       echo "$drive_id" | sudo tee "$mnt/etc/hostname" >/dev/null
-      echo "nameserver 1.1.1.1" | sudo tee "$mnt/etc/resolv.conf" >/dev/null
-
-      # Ensure a working init exists
-      if [[ ! -e "$mnt/sbin/init" ]] && [[ -e "$mnt/bin/busybox" ]]; then
-        sudo ln -sf /bin/busybox "$mnt/sbin/init"
-      fi
-
-      # Set up getty on serial console for a proper TTY
-      if [[ -d "$mnt/etc/init" ]]; then
-        sudo tee "$mnt/etc/init/ttyS0.conf" >/dev/null <<'GETTY'
-start on stopped rc or RUNLEVEL=[2345]
-stop on RUNLEVEL=[!2345]
-respawn
-exec /sbin/getty -L ttyS0 115200 vt100
-GETTY
-      fi
-      # Also add to inittab for sysvinit/busybox init
-      if [[ -e "$mnt/etc/inittab" ]]; then
-        echo 'ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100' | sudo tee -a "$mnt/etc/inittab" >/dev/null
-      else
-        echo 'ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100' | sudo tee "$mnt/etc/inittab" >/dev/null
-      fi
-      # Permit root login on ttyS0
-      if [[ -e "$mnt/etc/securetty" ]]; then
-        echo 'ttyS0' | sudo tee -a "$mnt/etc/securetty" >/dev/null
-      fi
-
-      # Set up SSH server in the rootfs via chroot
-      # Bind-mount /dev and /proc for chroot operations
-      sudo mount --bind /dev "$mnt/dev"
-      sudo mount --bind /proc "$mnt/proc"
-      sudo mount -t sysfs sysfs "$mnt/sys"
-
-      if ! sudo chroot "$mnt" dpkg -s openssh-server &>/dev/null; then
-        echo "Installing openssh-server in rootfs..."
-        sudo chroot "$mnt" apt-get update -qq
-        sudo chroot "$mnt" apt-get install -y -qq openssh-server
-      fi
-
-      # Generate SSH host keys
-      sudo chroot "$mnt" ssh-keygen -A
-
-      # Ensure sshd user and privilege separation dir exist
-      sudo chroot "$mnt" bash -c 'id sshd &>/dev/null || useradd -r -s /bin/false -d /var/empty/sshd sshd'
-      sudo mkdir -p "$mnt/run/sshd"
-
-      # Allow root login: unlock account (no password) and permit in sshd
-      sudo chroot "$mnt" passwd -d root
-      sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' "$mnt/etc/ssh/sshd_config"
-      sudo sed -i 's/^#*PermitEmptyPasswords.*/PermitEmptyPasswords no/' "$mnt/etc/ssh/sshd_config"
-
-      # Ensure locale is available
-      if sudo chroot "$mnt" which locale-gen &>/dev/null; then
-        sudo chroot "$mnt" locale-gen en_US.UTF-8 2>/dev/null || true
-      fi
-
-      sudo umount "$mnt/sys" "$mnt/proc" "$mnt/dev"
-
-      # Bake SSH public key for vsock access
-      if [[ -f "$FC_SSH_PUBKEY" ]]; then
-        sudo mkdir -p "$mnt/root/.ssh"
-        sudo chmod 700 "$mnt/root/.ssh"
-        sudo cp "$FC_SSH_PUBKEY" "$mnt/root/.ssh/authorized_keys"
-        sudo chmod 600 "$mnt/root/.ssh/authorized_keys"
-        echo "Baked SSH public key into rootfs"
-      else
-        echo "Warning: SSH pubkey not found at $FC_SSH_PUBKEY — skipping"
-        echo "  Run the Ansible playbook to generate it, or:"
-        echo "  ssh-keygen -t ed25519 -f $FC_SSH_KEY -N '' -C fc-vm"
-      fi
-
-      # Install vsock-to-SSH relay (bridges vsock port 22 to sshd)
-      sudo tee "$mnt/usr/local/bin/vsock-ssh-relay" >/dev/null <<'RELAY'
-#!/usr/bin/env python3
-"""Relay connections from vsock port 22 to localhost:22 (sshd)."""
-import socket, os, select, signal
-
-def relay(client):
-    pid = os.fork()
-    if pid:
-        client.close()
-        return
-    try:
-        target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        target.connect(("127.0.0.1", 22))
-        client.setblocking(False)
-        target.setblocking(False)
-        fds = [client, target]
-        while True:
-            r, _, _ = select.select(fds, [], [])
-            for fd in r:
-                data = fd.recv(65536)
-                if not data:
-                    raise ConnectionError
-                (target if fd == client else client).sendall(data)
-    except (ConnectionError, OSError):
-        pass
-    finally:
-        client.close()
-        target.close()
-        os._exit(0)
-
-signal.signal(signal.SIGCHLD, signal.SIG_IGN)
-sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-sock.bind((socket.VMADDR_CID_ANY, 22))
-sock.listen(8)
-while True:
-    client, _ = sock.accept()
-    relay(client)
-RELAY
-      sudo chmod 755 "$mnt/usr/local/bin/vsock-ssh-relay"
-
-      # Install init script that starts sshd + vsock relay
-      # (systemd doesn't work properly in Docker-exported rootfs)
-      sudo tee "$mnt/etc/rc.local" >/dev/null <<'INIT'
-#!/bin/bash
-# Mount essential filesystems
-mount -t proc proc /proc 2>/dev/null
-mount -t sysfs sysfs /sys 2>/dev/null
-mkdir -p /dev/pts
-mount -t devpts devpts /dev/pts -o gid=5,mode=620,ptmxmode=000 2>/dev/null
-# Ensure /dev/ptmx points to the devpts multiplexer
-ln -sf pts/ptmx /dev/ptmx 2>/dev/null
-mount -t tmpfs tmpfs /run 2>/dev/null
-mkdir -p /run/sshd
-
-# Set hostname
-hostname -F /etc/hostname 2>/dev/null
-
-# Start SSH server
-/usr/sbin/sshd
-
-# Start vsock-to-SSH relay
-/usr/local/bin/vsock-ssh-relay &
-
-# Drop to a shell on the serial console
-exec /sbin/getty -L ttyS0 115200 vt100
-INIT
-      sudo chmod 755 "$mnt/etc/rc.local"
-
-      # Point init at rc.local since systemd won't work
-      # The kernel will try /sbin/init (systemd) first — if it fails,
-      # we add rc.local to boot_args as init= fallback
-      sudo tee "$mnt/sbin/fc-init" >/dev/null <<'FCINIT'
-#!/bin/bash
-exec /etc/rc.local
-FCINIT
-      sudo chmod 755 "$mnt/sbin/fc-init"
-      echo "Installed fc-init boot script (sshd + vsock relay + getty)"
 
       sudo umount "$mnt"
       rmdir "$mnt"

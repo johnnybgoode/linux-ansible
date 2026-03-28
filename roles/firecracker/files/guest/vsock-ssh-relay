@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Relay connections from vsock port 22 to localhost:22 (sshd).
+
+Runs as a forking server: accepts connections on AF_VSOCK port 22 and
+proxies each one to the local SSH daemon. Used as the guest-side
+component of Firecracker vsock-based SSH access.
+"""
+import socket, os, select, signal
+
+
+def relay(client):
+    pid = os.fork()
+    if pid:
+        client.close()
+        return
+    try:
+        target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        target.connect(("127.0.0.1", 22))
+        client.setblocking(False)
+        target.setblocking(False)
+        fds = [client, target]
+        while True:
+            r, _, _ = select.select(fds, [], [])
+            for fd in r:
+                data = fd.recv(65536)
+                if not data:
+                    raise ConnectionError
+                (target if fd == client else client).sendall(data)
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        client.close()
+        target.close()
+        os._exit(0)
+
+
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind((socket.VMADDR_CID_ANY, 22))
+sock.listen(8)
+while True:
+    client, _ = sock.accept()
+    relay(client)

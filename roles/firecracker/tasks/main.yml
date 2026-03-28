@@ -206,6 +206,26 @@
     mode: '0644'
     force: false
 
+- name: Create guest Dockerfile directory
+  file:
+    path: /opt/firecracker/guest
+    state: directory
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    mode: '0755'
+
+- name: Install guest Dockerfile and scripts
+  copy:
+    src: "guest/{{ item }}"
+    dest: "/opt/firecracker/guest/{{ item }}"
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    mode: '0755'
+  loop:
+    - Dockerfile
+    - fc-init
+    - vsock-ssh-relay
+
 - name: Install example VM config
   copy:
     src: example-vm.json
