@@ -23,7 +23,7 @@ usage() {
   cat <<'EOF'
 Usage:
   fc-vm build  --config <config.json> [--image IMAGE] [--size SIZE_MB]
-  fc-vm start  --config <config.json> --name <vm_name>
+  fc-vm start  --config <config.json> --name <vm_name> [--foreground]
   fc-vm stop   --name <vm_name>
   fc-vm status [--name <vm_name>]
 
@@ -36,9 +36,10 @@ build:
 
 start:
   Creates tap devices for each network interface in the config, then
-  launches firecracker in the background.
-    --config  Firecracker JSON config file
-    --name    Unique name for this VM instance
+  launches firecracker.
+    --config      Firecracker JSON config file
+    --name        Unique name for this VM instance
+    --foreground  Run in foreground with serial console (default: background)
 
 stop:
   Gracefully shuts down the VM and tears down its tap devices.
@@ -186,7 +187,7 @@ cmd_build() {
 # --- start ---
 
 cmd_start() {
-  local config="" name=""
+  local config="" name="" foreground=false
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -197,6 +198,10 @@ cmd_start() {
     --name)
       name="$2"
       shift 2
+      ;;
+    --foreground | -fg)
+      foreground=true
+      shift
       ;;
     -*)
       echo "Unknown option: $1"
@@ -275,14 +280,31 @@ cmd_start() {
   echo "  socket: $socket"
   echo ""
 
-  firecracker \
-    --api-sock "$socket" \
-    --config-file "$config" &
-  local pid=$!
-  echo "$pid" >"$pidfile"
+  if [[ "$foreground" == "true" ]]; then
+    echo "Running in foreground (serial console). Press Ctrl+C to stop."
+    echo "---"
+    # Trap to clean up tap devices on exit
+    trap 'echo ""; echo "Cleaning up..."; rm -f "$pidfile" "$socket"; \
+      if [[ -f "$vm_dir/tap_devices" ]]; then \
+        while IFS= read -r t; do \
+          ip link show "$t" &>/dev/null && sudo fc-tap-setup delete "$t"; \
+        done < "$vm_dir/tap_devices"; \
+        rm -f "$vm_dir/tap_devices"; \
+      fi' EXIT
+    echo "$$" >"$pidfile"
+    exec firecracker \
+      --api-sock "$socket" \
+      --config-file "$config"
+  else
+    firecracker \
+      --api-sock "$socket" \
+      --config-file "$config" &
+    local pid=$!
+    echo "$pid" >"$pidfile"
 
-  echo "VM '$name' started (PID $pid)"
-  echo "Stop with: fc-vm stop --name $name"
+    echo "VM '$name' started (PID $pid)"
+    echo "Stop with: fc-vm stop --name $name"
+  fi
 }
 
 # --- stop ---
