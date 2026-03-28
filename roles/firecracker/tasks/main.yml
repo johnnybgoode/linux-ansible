@@ -1,0 +1,143 @@
+---
+# --- Firecracker binary ---
+
+- name: Set firecracker version
+  set_fact:
+    firecracker_version: "v1.15.0"
+
+- name: Check current firecracker version
+  command: firecracker --version
+  register: fc_current
+  changed_when: false
+  failed_when: false
+
+- name: Download firecracker tarball
+  get_url:
+    url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}/firecracker-{{ firecracker_version }}-x86_64.tgz"
+    dest: /tmp/firecracker.tgz
+    mode: '0644'
+  when: firecracker_version not in (fc_current.stdout | default(''))
+
+- name: Create temp extraction directory
+  file:
+    path: /tmp/firecracker-extract
+    state: directory
+    mode: '0755'
+  when: firecracker_version not in (fc_current.stdout | default(''))
+
+- name: Extract firecracker tarball
+  unarchive:
+    src: /tmp/firecracker.tgz
+    dest: /tmp/firecracker-extract
+    remote_src: true
+  when: firecracker_version not in (fc_current.stdout | default(''))
+
+- name: Install firecracker and jailer binaries
+  copy:
+    src: "/tmp/firecracker-extract/release-{{ firecracker_version }}-x86_64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: '0755'
+    remote_src: true
+  loop:
+    - firecracker
+    - jailer
+  when: firecracker_version not in (fc_current.stdout | default(''))
+
+- name: Clean up firecracker download
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/firecracker.tgz
+    - /tmp/firecracker-extract
+
+# --- KVM access ---
+
+- name: Load kvm kernel module
+  modprobe:
+    name: kvm
+    state: present
+
+- name: Add target user to kvm group
+  user:
+    name: "{{ target_user }}"
+    groups: kvm
+    append: true
+
+# --- Networking ---
+
+- name: Ensure iproute2 is installed
+  apt:
+    name: iproute2
+    state: present
+
+- name: Enable IPv4 forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Create nftables config for firecracker NAT
+  copy:
+    dest: /etc/nftables-firecracker.conf
+    mode: '0644'
+    content: |
+      table ip fc-nat {
+        chain postrouting {
+          type nat hook postrouting priority srcnat; policy accept;
+          ip saddr 172.16.0.0/24 masquerade
+        }
+        chain forward {
+          type filter hook forward priority filter; policy accept;
+          ip saddr 172.16.0.0/24 accept
+          ip daddr 172.16.0.0/24 ct state established,related accept
+        }
+      }
+  notify: Apply firecracker nftables rules
+
+- name: Load firecracker nftables rules on boot
+  lineinfile:
+    path: /etc/nftables.conf
+    line: 'include "/etc/nftables-firecracker.conf"'
+    create: true
+    mode: '0644'
+
+- name: Ensure nftables service is enabled
+  systemd:
+    name: nftables
+    enabled: true
+
+- name: Install fc-tap-setup helper script
+  copy:
+    src: fc-tap-setup
+    dest: /usr/local/bin/fc-tap-setup
+    mode: '0755'
+
+# --- UFW ---
+
+- name: Allow forwarding from firecracker subnet
+  ufw:
+    rule: allow
+    route: true
+    from_ip: 172.16.0.0/24
+    comment: Firecracker microVM forwarding
+
+# --- Directory structure ---
+
+- name: Create jailer base directory
+  file:
+    path: /srv/jailer
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create firecracker working directory
+  file:
+    path: /opt/firecracker
+    state: directory
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    mode: '0755'

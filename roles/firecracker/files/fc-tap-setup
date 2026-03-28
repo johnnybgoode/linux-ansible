@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Helper script for managing Firecracker tap devices with NAT.
+# Usage:
+#   fc-tap-setup create <tap-name> <host-ip/cidr>
+#   fc-tap-setup delete <tap-name>
+#
+# Example:
+#   fc-tap-setup create tap0 172.16.0.1/30   # host=172.16.0.1, guest=172.16.0.2
+#   fc-tap-setup delete tap0
+
+usage() {
+    echo "Usage: $0 create <tap-name> <host-ip/cidr>"
+    echo "       $0 delete <tap-name>"
+    exit 1
+}
+
+[[ $# -lt 2 ]] && usage
+
+ACTION="$1"
+TAP_NAME="$2"
+
+case "$ACTION" in
+    create)
+        [[ $# -lt 3 ]] && usage
+        HOST_CIDR="$3"
+
+        ip tuntap add dev "$TAP_NAME" mode tap
+        ip addr add "$HOST_CIDR" dev "$TAP_NAME"
+        ip link set "$TAP_NAME" up
+        echo "Created $TAP_NAME with $HOST_CIDR"
+        ;;
+    delete)
+        ip link set "$TAP_NAME" down 2>/dev/null || true
+        ip tuntap del dev "$TAP_NAME" mode tap
+        echo "Deleted $TAP_NAME"
+        ;;
+    *)
+        usage
+        ;;
+esac
