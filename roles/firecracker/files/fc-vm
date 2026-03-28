@@ -171,6 +171,25 @@ cmd_build() {
         sudo ln -sf /bin/busybox "$mnt/sbin/init"
       fi
 
+      # Set up getty on serial console for a proper TTY
+      sudo mkdir -p "$mnt/etc/init.d"
+      sudo tee "$mnt/etc/init/ttyS0.conf" >/dev/null <<'GETTY'
+start on stopped rc or RUNLEVEL=[2345]
+stop on RUNLEVEL=[!2345]
+respawn
+exec /sbin/getty -L ttyS0 115200 vt100
+GETTY
+      # Also add to inittab for sysvinit/busybox init
+      if [[ -e "$mnt/etc/inittab" ]]; then
+        echo 'ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100' | sudo tee -a "$mnt/etc/inittab" >/dev/null
+      else
+        echo 'ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100' | sudo tee "$mnt/etc/inittab" >/dev/null
+      fi
+      # Permit root login on ttyS0
+      if [[ -e "$mnt/etc/securetty" ]]; then
+        echo 'ttyS0' | sudo tee -a "$mnt/etc/securetty" >/dev/null
+      fi
+
       sudo umount "$mnt"
       rmdir "$mnt"
       echo "Populated root drive from $image"
