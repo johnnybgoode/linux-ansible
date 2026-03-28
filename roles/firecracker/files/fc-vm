@@ -260,6 +260,40 @@ cmd_start() {
   mkdir -p "$vm_dir"
   rm -f "$socket"
 
+  # Copy drives into vm_dir on first start, reuse on subsequent starts
+  local runtime_config="$vm_dir/config.json"
+  if [[ ! -f "$runtime_config" ]]; then
+    echo "First start for '$name' — copying drives..."
+    local drive_count
+    drive_count=$(jq '.drives | length' "$config")
+
+    # Start with the original config, then rewrite drive paths
+    cp "$config" "$runtime_config"
+
+    for ((i = 0; i < drive_count; i++)); do
+      local src_path drive_id dest_path
+      src_path=$(jq -r ".drives[$i].path_on_host" "$config")
+      drive_id=$(jq -r ".drives[$i].drive_id" "$config")
+      dest_path="$vm_dir/${drive_id}.ext4"
+
+      if [[ ! -f "$src_path" ]]; then
+        echo "Error: drive image not found: $src_path"
+        rm -f "$runtime_config"
+        exit 1
+      fi
+
+      cp "$src_path" "$dest_path"
+      echo "  copied $src_path -> $dest_path"
+
+      # Update the runtime config to point to the local copy
+      local tmp
+      tmp=$(jq ".drives[$i].path_on_host = \"$dest_path\"" "$runtime_config")
+      echo "$tmp" > "$runtime_config"
+    done
+  else
+    echo "Restarting '$name' with existing filesystem"
+  fi
+
   # Set up tap devices for each network interface in the config
   local iface_count
   iface_count=$(jq '.["network-interfaces"] | length' "$config")
@@ -313,11 +347,11 @@ cmd_start() {
     echo "$$" >"$pidfile"
     exec firecracker \
       --api-sock "$socket" \
-      --config-file "$config"
+      --config-file "$runtime_config"
   else
     firecracker \
       --api-sock "$socket" \
-      --config-file "$config" &
+      --config-file "$runtime_config" &
     local pid=$!
     echo "$pid" >"$pidfile"
 
