@@ -1,0 +1,48 @@
+---
+- name: Set neovim version
+  set_fact:
+    nvim_version: "v0.11.6"
+
+- name: Check current nvim version
+  command: nvim --version
+  register: nvim_current
+  changed_when: false
+  failed_when: false
+
+- name: Remove apt neovim if present
+  apt:
+    name: neovim
+    state: absent
+  when: nvim_current.rc == 0 and nvim_version not in (nvim_current.stdout | default(''))
+
+- name: Download neovim tarball
+  get_url:
+    url: "https://github.com/neovim/neovim/releases/download/{{ nvim_version }}/nvim-linux-x86_64.tar.gz"
+    dest: /tmp/nvim-linux-x86_64.tar.gz
+    mode: '0644'
+  when: nvim_version not in (nvim_current.stdout | default(''))
+
+- name: Remove previous neovim install
+  file:
+    path: /opt/nvim-linux-x86_64
+    state: absent
+  when: nvim_version not in (nvim_current.stdout | default(''))
+
+- name: Extract neovim to /opt
+  unarchive:
+    src: /tmp/nvim-linux-x86_64.tar.gz
+    dest: /opt
+    remote_src: true
+  when: nvim_version not in (nvim_current.stdout | default(''))
+
+- name: Symlink nvim into /usr/local/bin
+  file:
+    src: /opt/nvim-linux-x86_64/bin/nvim
+    dest: /usr/local/bin/nvim
+    state: link
+    force: true
+
+- name: Clean up tarball
+  file:
+    path: /tmp/nvim-linux-x86_64.tar.gz
+    state: absent

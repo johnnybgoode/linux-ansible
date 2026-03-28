@@ -18,6 +18,7 @@
     - base
     - ssh
     - tailscale
+    - neovim
     - node
     - tmux
     - dotfiles
