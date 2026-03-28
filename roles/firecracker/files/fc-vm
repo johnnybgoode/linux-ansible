@@ -3,234 +3,225 @@ set -euo pipefail
 
 # Firecracker microVM lifecycle manager.
 #
-# Usage:
-#   fc-vm build  <name> [--image alpine:latest] [--size 512]
-#   fc-vm start  <name> [--vcpus 2] [--mem 256]
-#   fc-vm stop   <name>
-#   fc-vm status [name]
+# Thin wrapper around firecracker that handles tap device setup/teardown
+# and process management. VM configuration is defined entirely by the
+# Firecracker JSON config file.
 #
-# VMs are stored in /opt/firecracker/vms/<name>/
-# Shared kernel lives at /opt/firecracker/kernel/vmlinux
+# Usage:
+#   fc-vm build  --config <config.json> [--image alpine:latest] [--size 512]
+#   fc-vm start  --config <config.json> --name <vm_name>
+#   fc-vm stop   --name <vm_name>
+#   fc-vm status [--name <vm_name>]
+#
+# Runtime state is stored in /opt/firecracker/vms/<name>/
+# (pid file, api socket)
 
 FC_BASE="/opt/firecracker"
-FC_KERNEL_DIR="$FC_BASE/kernel"
 FC_VMS_DIR="$FC_BASE/vms"
 KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux-6.1.102"
-FC_SUBNET_PREFIX="172.16.0"
 
 usage() {
-    cat <<EOF
+    cat <<'EOF'
 Usage:
-  fc-vm build  <name> [--image IMAGE] [--size SIZE_MB]
-  fc-vm start  <name> [--vcpus N] [--mem MIB]
-  fc-vm stop   <name>
-  fc-vm status [name]
+  fc-vm build  --config <config.json> [--image IMAGE] [--size SIZE_MB]
+  fc-vm start  --config <config.json> --name <vm_name>
+  fc-vm stop   --name <vm_name>
+  fc-vm status [--name <vm_name>]
 
-Options for build:
-  --image   Docker image to use for rootfs (default: alpine:latest)
-  --size    Rootfs size in MB (default: 512)
+build:
+  Reads the config to find drive paths and builds rootfs images from a
+  Docker image. Downloads a guest kernel if kernel_image_path doesn't exist.
+    --config  Firecracker JSON config file
+    --image   Docker image for rootfs (default: alpine:latest)
+    --size    Rootfs size in MB (default: 512)
 
-Options for start:
-  --vcpus   Number of vCPUs (default: 2)
-  --mem     Memory in MiB (default: 256)
+start:
+  Creates tap devices for each network interface in the config, then
+  launches firecracker in the background.
+    --config  Firecracker JSON config file
+    --name    Unique name for this VM instance
+
+stop:
+  Gracefully shuts down the VM and tears down its tap devices.
+    --name    VM instance name
+
+status:
+  Shows running VMs and their state.
+    --name    Filter to a specific VM (optional)
 
 Examples:
-  fc-vm build myvm
-  fc-vm build myvm --image ubuntu:24.04 --size 1024
-  fc-vm start myvm
-  fc-vm start myvm --vcpus 4 --mem 512
-  fc-vm stop myvm
+  fc-vm build --config vms/web.json
+  fc-vm build --config vms/web.json --image ubuntu:24.04 --size 1024
+  fc-vm start --config vms/web.json --name web-1
+  fc-vm start --config vms/web.json --name web-2
+  fc-vm stop --name web-1
   fc-vm status
 EOF
     exit 1
 }
 
-# Derive a tap device name and IP pair from the VM name.
-# Uses a simple hash to pick a slot in 172.16.0.0/24.
-# Each VM gets a /30: host=.((slot*4)+1), guest=.((slot*4)+2)
-vm_network_slot() {
-    local name="$1"
-    # Hash the name to a number 1-62 (max 62 VMs, each using a /30)
-    local hash
-    hash=$(echo -n "$name" | cksum | awk '{print $1}')
-    echo $(( (hash % 62) + 1 ))
-}
-
-vm_tap_name() { echo "fc-${1}"; }
-
-vm_host_ip() {
-    local slot
-    slot=$(vm_network_slot "$1")
-    echo "${FC_SUBNET_PREFIX}.$(( slot * 4 + 1 ))"
-}
-
-vm_guest_ip() {
-    local slot
-    slot=$(vm_network_slot "$1")
-    echo "${FC_SUBNET_PREFIX}.$(( slot * 4 + 2 ))"
-}
-
-vm_gateway_ip() { vm_host_ip "$1"; }
-
-ensure_kernel() {
-    if [[ -f "$FC_KERNEL_DIR/vmlinux" ]]; then
-        return
+need_jq() {
+    if ! command -v jq &>/dev/null; then
+        echo "Error: jq is required but not installed"
+        exit 1
     fi
-    echo "Downloading guest kernel..."
-    mkdir -p "$FC_KERNEL_DIR"
-    curl -fsSL -o "$FC_KERNEL_DIR/vmlinux" "$KERNEL_URL"
-    echo "Kernel saved to $FC_KERNEL_DIR/vmlinux"
 }
 
 # --- build ---
 
 cmd_build() {
-    local name=""
-    local image="alpine:latest"
-    local size=512
+    local config="" image="alpine:latest" size=512
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --image) image="$2"; shift 2 ;;
-            --size)  size="$2"; shift 2 ;;
-            -*)      echo "Unknown option: $1"; usage ;;
-            *)       name="$1"; shift ;;
+            --config) config="$2"; shift 2 ;;
+            --image)  image="$2"; shift 2 ;;
+            --size)   size="$2"; shift 2 ;;
+            -*)       echo "Unknown option: $1"; usage ;;
+            *)        echo "Unexpected argument: $1"; usage ;;
         esac
     done
 
-    [[ -z "$name" ]] && usage
+    [[ -z "$config" ]] && { echo "Error: --config is required"; usage; }
+    [[ -f "$config" ]] || { echo "Error: config file not found: $config"; exit 1; }
 
-    local vm_dir="$FC_VMS_DIR/$name"
+    need_jq
 
-    if [[ -f "$vm_dir/rootfs.ext4" ]]; then
-        echo "Error: VM '$name' already exists at $vm_dir"
-        echo "Delete it first: rm -rf $vm_dir"
-        exit 1
+    # Ensure guest kernel exists
+    local kernel_path
+    kernel_path=$(jq -r '.["boot-source"].kernel_image_path' "$config")
+    if [[ ! -f "$kernel_path" ]]; then
+        echo "Kernel not found at $kernel_path — downloading..."
+        mkdir -p "$(dirname "$kernel_path")"
+        curl -fsSL -o "$kernel_path" "$KERNEL_URL"
+        echo "Saved kernel to $kernel_path"
     fi
 
-    ensure_kernel
+    # Build rootfs for each drive that doesn't exist yet
+    local drive_count
+    drive_count=$(jq '.drives | length' "$config")
 
-    echo "Building rootfs for '$name' from $image (${size}MB)..."
-    mkdir -p "$vm_dir"
+    for (( i=0; i<drive_count; i++ )); do
+        local path is_root
+        path=$(jq -r ".drives[$i].path_on_host" "$config")
+        is_root=$(jq -r ".drives[$i].is_root_device" "$config")
 
-    # Create empty ext4 image
-    dd if=/dev/zero of="$vm_dir/rootfs.ext4" bs=1M count="$size" status=progress
-    mkfs.ext4 -F "$vm_dir/rootfs.ext4"
+        if [[ -f "$path" ]]; then
+            echo "Drive already exists: $path (skipping)"
+            continue
+        fi
 
-    # Populate from Docker image
-    local mnt="$vm_dir/mnt"
-    mkdir -p "$mnt"
-    local cid
-    cid=$(docker create "$image")
-    sudo mount "$vm_dir/rootfs.ext4" "$mnt"
-    docker export "$cid" | sudo tar -xf - -C "$mnt"
-    docker rm "$cid" >/dev/null
+        echo "Building drive: $path (${size}MB from $image)..."
+        mkdir -p "$(dirname "$path")"
 
-    # Set up guest init: hostname, DNS, and networking via kernel cmdline
-    echo "$name" | sudo tee "$mnt/etc/hostname" >/dev/null
-    echo "nameserver 1.1.1.1" | sudo tee "$mnt/etc/resolv.conf" >/dev/null
+        dd if=/dev/zero of="$path" bs=1M count="$size" status=progress
+        mkfs.ext4 -F "$path"
 
-    # Ensure a working init exists
-    if [[ ! -e "$mnt/sbin/init" ]] && [[ -e "$mnt/bin/busybox" ]]; then
-        sudo ln -sf /bin/busybox "$mnt/sbin/init"
-    fi
+        if [[ "$is_root" == "true" ]]; then
+            # Populate root drive from Docker image
+            local mnt
+            mnt=$(mktemp -d)
+            local cid
+            cid=$(docker create "$image")
+            sudo mount "$path" "$mnt"
+            docker export "$cid" | sudo tar -xf - -C "$mnt"
+            docker rm "$cid" >/dev/null
 
-    sudo umount "$mnt"
-    rmdir "$mnt"
+            # Basic guest setup
+            local drive_id
+            drive_id=$(jq -r ".drives[$i].drive_id" "$config")
+            echo "$drive_id" | sudo tee "$mnt/etc/hostname" >/dev/null
+            echo "nameserver 1.1.1.1" | sudo tee "$mnt/etc/resolv.conf" >/dev/null
 
-    # Save VM metadata
-    cat > "$vm_dir/vm.conf" <<CONF
-IMAGE=$image
-SIZE_MB=$size
-CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-CONF
+            # Ensure a working init exists
+            if [[ ! -e "$mnt/sbin/init" ]] && [[ -e "$mnt/bin/busybox" ]]; then
+                sudo ln -sf /bin/busybox "$mnt/sbin/init"
+            fi
+
+            sudo umount "$mnt"
+            rmdir "$mnt"
+            echo "Populated root drive from $image"
+        else
+            echo "Created empty drive (mount in guest and use as needed)"
+        fi
+    done
 
     echo ""
-    echo "VM '$name' built successfully:"
-    echo "  rootfs: $vm_dir/rootfs.ext4"
-    echo "  kernel: $FC_KERNEL_DIR/vmlinux"
-    echo ""
-    echo "Start it with: fc-vm start $name"
+    echo "Build complete. Start a VM with:"
+    echo "  fc-vm start --config $config --name <vm_name>"
 }
 
 # --- start ---
 
 cmd_start() {
-    local name=""
-    local vcpus=2
-    local mem=256
+    local config="" name=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --vcpus) vcpus="$2"; shift 2 ;;
-            --mem)   mem="$2"; shift 2 ;;
-            -*)      echo "Unknown option: $1"; usage ;;
-            *)       name="$1"; shift ;;
+            --config) config="$2"; shift 2 ;;
+            --name)   name="$2"; shift 2 ;;
+            -*)       echo "Unknown option: $1"; usage ;;
+            *)        echo "Unexpected argument: $1"; usage ;;
         esac
     done
 
-    [[ -z "$name" ]] && usage
+    [[ -z "$config" ]] && { echo "Error: --config is required"; usage; }
+    [[ -z "$name" ]]   && { echo "Error: --name is required"; usage; }
+    [[ -f "$config" ]] || { echo "Error: config file not found: $config"; exit 1; }
+
+    need_jq
 
     local vm_dir="$FC_VMS_DIR/$name"
     local socket="$vm_dir/firecracker.socket"
     local pidfile="$vm_dir/firecracker.pid"
-
-    if [[ ! -f "$vm_dir/rootfs.ext4" ]]; then
-        echo "Error: VM '$name' not found. Run: fc-vm build $name"
-        exit 1
-    fi
 
     if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
         echo "Error: VM '$name' is already running (PID $(cat "$pidfile"))"
         exit 1
     fi
 
-    local tap_name guest_ip host_ip
-    tap_name=$(vm_tap_name "$name")
-    host_ip=$(vm_host_ip "$name")
-    guest_ip=$(vm_guest_ip "$name")
-
-    # Set up networking
-    sudo fc-tap-setup create "$tap_name" "$host_ip/30"
-
-    # Clean stale socket
+    mkdir -p "$vm_dir"
     rm -f "$socket"
 
-    # Build config
-    local config="$vm_dir/config.json"
-    cat > "$config" <<CONF
-{
-  "boot-source": {
-    "kernel_image_path": "$FC_KERNEL_DIR/vmlinux",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off ip=${guest_ip}::${host_ip}:255.255.255.252::eth0:off"
-  },
-  "drives": [{
-    "drive_id": "rootfs",
-    "path_on_host": "$vm_dir/rootfs.ext4",
-    "is_root_device": true,
-    "is_read_only": false
-  }],
-  "network-interfaces": [{
-    "iface_id": "eth0",
-    "guest_mac": "AA:FC:00:00:00:$(printf '%02x' "$(vm_network_slot "$name")")",
-    "host_dev_name": "$tap_name"
-  }],
-  "machine-config": {
-    "vcpu_count": $vcpus,
-    "mem_size_mib": $mem
-  }
-}
-CONF
+    # Set up tap devices for each network interface in the config
+    local iface_count
+    iface_count=$(jq '.["network-interfaces"] | length' "$config")
+    local tap_names=()
 
+    for (( i=0; i<iface_count; i++ )); do
+        local tap_name
+        tap_name=$(jq -r ".[\"network-interfaces\"][$i].host_dev_name" "$config")
+        tap_names+=("$tap_name")
+
+        if ip link show "$tap_name" &>/dev/null; then
+            echo "Tap device $tap_name already exists, reusing"
+            continue
+        fi
+
+        # Derive IP from guest MAC: use last octet for the /30 slot
+        local mac guest_slot host_ip
+        mac=$(jq -r ".[\"network-interfaces\"][$i].guest_mac // empty" "$config")
+        if [[ -n "$mac" ]]; then
+            # Last octet of MAC -> network slot
+            guest_slot=$(printf '%d' "0x${mac##*:}")
+        else
+            guest_slot=$((i + 1))
+        fi
+        host_ip="172.16.0.$(( guest_slot * 4 + 1 ))"
+
+        sudo fc-tap-setup create "$tap_name" "$host_ip/30"
+        echo "Created tap: $tap_name ($host_ip/30)"
+    done
+
+    # Save tap names for cleanup on stop
+    printf '%s\n' "${tap_names[@]}" > "$vm_dir/tap_devices"
+
+    echo ""
     echo "Starting VM '$name'..."
-    echo "  tap:    $tap_name ($host_ip/30)"
-    echo "  guest:  $guest_ip"
-    echo "  vcpus:  $vcpus"
-    echo "  mem:    ${mem}MiB"
+    echo "  config: $config"
     echo "  socket: $socket"
     echo ""
 
-    # Launch in background
     firecracker \
         --api-sock "$socket" \
         --config-file "$config" &
@@ -238,39 +229,43 @@ CONF
     echo "$pid" > "$pidfile"
 
     echo "VM '$name' started (PID $pid)"
-    echo "Attach to console: screen $socket  (not supported — use serial)"
-    echo "Stop with: fc-vm stop $name"
+    echo "Stop with: fc-vm stop --name $name"
 }
 
 # --- stop ---
 
 cmd_stop() {
-    local name="$1"
-    [[ -z "$name" ]] && usage
+    local name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) name="$2"; shift 2 ;;
+            -*)     echo "Unknown option: $1"; usage ;;
+            *)      echo "Unexpected argument: $1"; usage ;;
+        esac
+    done
+
+    [[ -z "$name" ]] && { echo "Error: --name is required"; usage; }
 
     local vm_dir="$FC_VMS_DIR/$name"
     local pidfile="$vm_dir/firecracker.pid"
     local socket="$vm_dir/firecracker.socket"
-    local tap_name
-    tap_name=$(vm_tap_name "$name")
 
     if [[ -f "$pidfile" ]]; then
         local pid
         pid=$(cat "$pidfile")
         if kill -0 "$pid" 2>/dev/null; then
-            # Send shutdown request via API, fall back to kill
+            # Graceful shutdown via API
             if [[ -S "$socket" ]]; then
                 curl -s --unix-socket "$socket" -X PUT \
                     "http://localhost/actions" \
                     -H "Content-Type: application/json" \
                     -d '{"action_type": "SendCtrlAltDel"}' >/dev/null 2>&1 || true
-                # Give it a moment to shut down gracefully
                 for i in {1..5}; do
                     kill -0 "$pid" 2>/dev/null || break
                     sleep 1
                 done
             fi
-            # Force kill if still running
             if kill -0 "$pid" 2>/dev/null; then
                 kill "$pid"
                 echo "Killed firecracker process $pid"
@@ -279,14 +274,20 @@ cmd_stop() {
             fi
         fi
         rm -f "$pidfile"
+    else
+        echo "No PID file found for '$name'"
     fi
 
-    # Clean up socket
     rm -f "$socket"
 
-    # Tear down tap device
-    if ip link show "$tap_name" >/dev/null 2>&1; then
-        sudo fc-tap-setup delete "$tap_name"
+    # Tear down tap devices
+    if [[ -f "$vm_dir/tap_devices" ]]; then
+        while IFS= read -r tap_name; do
+            if ip link show "$tap_name" &>/dev/null; then
+                sudo fc-tap-setup delete "$tap_name"
+            fi
+        done < "$vm_dir/tap_devices"
+        rm -f "$vm_dir/tap_devices"
     fi
 
     echo "VM '$name' stopped"
@@ -295,7 +296,15 @@ cmd_stop() {
 # --- status ---
 
 cmd_status() {
-    local filter_name="${1:-}"
+    local filter_name=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name) filter_name="$2"; shift 2 ;;
+            -*)     echo "Unknown option: $1"; usage ;;
+            *)      echo "Unexpected argument: $1"; usage ;;
+        esac
+    done
 
     if [[ ! -d "$FC_VMS_DIR" ]]; then
         echo "No VMs found"
@@ -311,8 +320,7 @@ cmd_status() {
         [[ -n "$filter_name" && "$name" != "$filter_name" ]] && continue
         found=true
 
-        local status="stopped"
-        local pid="-"
+        local status="stopped" pid="-"
         local pidfile="$vm_dir/firecracker.pid"
 
         if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
@@ -320,10 +328,12 @@ cmd_status() {
             pid=$(cat "$pidfile")
         fi
 
-        local guest_ip
-        guest_ip=$(vm_guest_ip "$name")
+        local taps="-"
+        if [[ -f "$vm_dir/tap_devices" ]]; then
+            taps=$(paste -sd, "$vm_dir/tap_devices")
+        fi
 
-        printf "%-20s %-10s pid=%-8s ip=%s\n" "$name" "$status" "$pid" "$guest_ip"
+        printf "%-20s %-10s pid=%-8s taps=%s\n" "$name" "$status" "$pid" "$taps"
     done
 
     if [[ "$found" == "false" ]]; then

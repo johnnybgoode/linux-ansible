@@ -144,6 +144,7 @@
   loop:
     - /opt/firecracker
     - /opt/firecracker/kernel
+    - /opt/firecracker/images
     - /opt/firecracker/vms
 
 - name: Install fc-vm lifecycle script
@@ -151,3 +152,12 @@
     src: fc-vm
     dest: /usr/local/bin/fc-vm
     mode: '0755'
+
+- name: Install example VM config
+  copy:
+    src: example-vm.json
+    dest: /opt/firecracker/example-vm.json
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    mode: '0644'
+    force: false
