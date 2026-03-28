@@ -13,7 +13,7 @@
 
 - name: Set timezone
   timezone:
-    name: UTC
+    name: America/New_York
 
 - name: Update apt cache and upgrade packages
   apt:
