@@ -72,6 +72,12 @@
   when: "'AuthenticAMD' in ansible_processor"
   ignore_errors: true
 
+- name: Load vhost_vsock module for host-side vsock support
+  modprobe:
+    name: vhost_vsock
+    state: present
+  ignore_errors: true
+
 - name: Add target user to kvm group
   user:
     name: "{{ target_user }}"
@@ -80,9 +86,12 @@
 
 # --- Networking ---
 
-- name: Ensure iproute2 is installed
+- name: Install networking and vsock packages
   apt:
-    name: iproute2
+    name:
+      - iproute2
+      - socat
+      - sshfs
     state: present
 
 - name: Enable IPv4 forwarding
@@ -166,6 +175,36 @@
     src: fc-vm
     dest: /usr/local/bin/fc-vm
     mode: '0755'
+
+- name: Install fc-vsock-ssh ProxyCommand helper
+  copy:
+    src: fc-vsock-ssh
+    dest: /usr/local/bin/fc-vsock-ssh
+    mode: '0755'
+
+- name: Create SSH key directory
+  file:
+    path: /opt/firecracker/ssh
+    state: directory
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    mode: '0700'
+
+- name: Generate SSH keypair for VM access
+  become: true
+  become_user: "{{ target_user }}"
+  command: ssh-keygen -t ed25519 -f /opt/firecracker/ssh/fc_vm_key -N "" -C "fc-vm"
+  args:
+    creates: /opt/firecracker/ssh/fc_vm_key
+
+- name: Initialize CID counter
+  copy:
+    dest: /opt/firecracker/next_cid
+    content: "3"
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    mode: '0644'
+    force: false
 
 - name: Install example VM config
   copy:

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# SSH ProxyCommand for connecting to Firecracker VMs over vsock.
+#
+# Firecracker uses AF_UNIX sockets (not AF_VSOCK) on the host side,
+# with a text CONNECT handshake. This script bridges SSH through that.
+#
+# Usage (as ProxyCommand):
+#   ssh -o "ProxyCommand=fc-vsock-ssh /path/to/v.sock 22" root@localhost
+
+UDS_PATH="${1:?Usage: fc-vsock-ssh <uds_path> [port]}"
+PORT="${2:-22}"
+
+exec socat - UNIX-CONNECT:"$UDS_PATH",connect-timeout=5 <<< "CONNECT $PORT"

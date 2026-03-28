@@ -18,31 +18,39 @@ set -euo pipefail
 
 FC_BASE="/opt/firecracker"
 FC_VMS_DIR="$FC_BASE/vms"
+FC_SSH_KEY="$FC_BASE/ssh/fc_vm_key"
+FC_SSH_PUBKEY="$FC_BASE/ssh/fc_vm_key.pub"
+FC_CID_FILE="$FC_BASE/next_cid"
 
 usage() {
   cat <<'EOF'
 Usage:
-  fc-vm build  --config <config.json> [--image IMAGE] [--size SIZE_MB]
-  fc-vm start  --config <config.json> --name <vm_name> [--foreground]
-  fc-vm stop   --name <vm_name>
-  fc-vm status [--name <vm_name>]
+  fc-vm build    --config <config.json> [--image IMAGE] [--size SIZE_MB]
+  fc-vm start    --config <config.json> --name <vm_name> [--foreground]
+  fc-vm stop     --name <vm_name>
+  fc-vm connect  --name <vm_name>
+  fc-vm status   [--name <vm_name>]
 
 build:
   Reads the config to find drive paths and builds rootfs images from a
   Docker image. Downloads a guest kernel if kernel_image_path doesn't exist.
+  Bakes SSH pubkey and vsock relay service into the rootfs.
     --config  Firecracker JSON config file
     --image   Docker image for rootfs (default: alpine:latest)
     --size    Rootfs size in MB (default: 512)
 
 start:
-  Creates tap devices for each network interface in the config, then
-  launches firecracker.
+  Creates tap devices, assigns a vsock CID, and launches firecracker.
     --config      Firecracker JSON config file
     --name        Unique name for this VM instance
     --foreground  Run in foreground with serial console (default: background)
 
 stop:
-  Gracefully shuts down the VM and tears down its tap devices.
+  Gracefully shuts down the VM and tears down tap devices.
+    --name    VM instance name
+
+connect:
+  Opens an SSH session to a running VM over vsock.
     --name    VM instance name
 
 status:
@@ -50,11 +58,10 @@ status:
     --name    Filter to a specific VM (optional)
 
 Examples:
-  fc-vm build --config vms/web.json
   fc-vm build --config vms/web.json --image ubuntu:24.04 --size 1024
-  fc-vm start --config vms/web.json --name web-1
-  fc-vm start --config vms/web.json --name web-2
-  fc-vm stop --name web-1
+  fc-vm start --config vms/web.json --name project-a
+  fc-vm connect --name project-a
+  fc-vm stop --name project-a
   fc-vm status
 EOF
   exit 1
@@ -65,6 +72,20 @@ need_jq() {
     echo "Error: jq is required but not installed"
     exit 1
   fi
+}
+
+# Allocate or reuse a vsock CID for a VM
+get_or_assign_cid() {
+  local vm_dir="$1"
+  if [[ -f "$vm_dir/cid" ]]; then
+    cat "$vm_dir/cid"
+    return
+  fi
+  local cid
+  cid=$(cat "$FC_CID_FILE" 2>/dev/null || echo 3)
+  echo "$cid" >"$vm_dir/cid"
+  echo $(( cid + 1 )) >"$FC_CID_FILE"
+  echo "$cid"
 }
 
 # --- build kernel URL ---
@@ -190,6 +211,39 @@ GETTY
         echo 'ttyS0' | sudo tee -a "$mnt/etc/securetty" >/dev/null
       fi
 
+      # Bake SSH public key for vsock access
+      if [[ -f "$FC_SSH_PUBKEY" ]]; then
+        sudo mkdir -p "$mnt/root/.ssh"
+        sudo chmod 700 "$mnt/root/.ssh"
+        sudo cp "$FC_SSH_PUBKEY" "$mnt/root/.ssh/authorized_keys"
+        sudo chmod 600 "$mnt/root/.ssh/authorized_keys"
+        echo "Baked SSH public key into rootfs"
+      else
+        echo "Warning: SSH pubkey not found at $FC_SSH_PUBKEY — skipping"
+        echo "  Run the Ansible playbook to generate it, or:"
+        echo "  ssh-keygen -t ed25519 -f $FC_SSH_KEY -N '' -C fc-vm"
+      fi
+
+      # Install vsock-to-SSH relay service (bridges vsock port 22 to sshd)
+      sudo mkdir -p "$mnt/etc/systemd/system/multi-user.target.wants"
+      sudo tee "$mnt/etc/systemd/system/vsock-ssh-relay.service" >/dev/null <<'VSOCK'
+[Unit]
+Description=vsock to SSH relay
+After=ssh.service sshd.service
+Wants=ssh.service
+
+[Service]
+ExecStart=/usr/bin/socat VSOCK-LISTEN:22,reuseaddr,fork TCP:localhost:22
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+VSOCK
+      sudo ln -sf ../vsock-ssh-relay.service \
+        "$mnt/etc/systemd/system/multi-user.target.wants/vsock-ssh-relay.service"
+      echo "Installed vsock-ssh-relay systemd service"
+
       sudo umount "$mnt"
       rmdir "$mnt"
       echo "Populated root drive from $image"
@@ -258,7 +312,7 @@ cmd_start() {
   fi
 
   mkdir -p "$vm_dir"
-  rm -f "$socket"
+  rm -f "$socket" "$vm_dir/v.sock"
 
   # Copy drives into vm_dir on first start, reuse on subsequent starts
   local runtime_config="$vm_dir/config.json"
@@ -293,6 +347,14 @@ cmd_start() {
   else
     echo "Restarting '$name' with existing filesystem"
   fi
+
+  # Assign vsock CID and inject into runtime config
+  local cid vsock_path
+  cid=$(get_or_assign_cid "$vm_dir")
+  vsock_path="$vm_dir/v.sock"
+  local tmp
+  tmp=$(jq ".vsock = {\"guest_cid\": $cid, \"uds_path\": \"$vsock_path\"}" "$runtime_config")
+  echo "$tmp" >"$runtime_config"
 
   # Set up tap devices for each network interface in the config
   local iface_count
@@ -331,6 +393,7 @@ cmd_start() {
   echo "Starting VM '$name'..."
   echo "  config: $config"
   echo "  socket: $socket"
+  echo "  vsock:  CID $cid ($vsock_path)"
   echo ""
 
   if [[ "$foreground" == "true" ]]; then
@@ -356,7 +419,8 @@ cmd_start() {
     echo "$pid" >"$pidfile"
 
     echo "VM '$name' started (PID $pid)"
-    echo "Stop with: fc-vm stop --name $name"
+    echo "Connect with: fc-vm connect --name $name"
+    echo "Stop with:    fc-vm stop --name $name"
   fi
 }
 
@@ -418,7 +482,7 @@ cmd_stop() {
     echo "No PID file found for '$name'"
   fi
 
-  rm -f "$socket"
+  rm -f "$socket" "$vm_dir/v.sock"
 
   # Tear down tap devices
   if [[ -f "$vm_dir/tap_devices" ]]; then
@@ -431,6 +495,63 @@ cmd_stop() {
   fi
 
   echo "VM '$name' stopped"
+}
+
+# --- connect ---
+
+cmd_connect() {
+  local name=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --name)
+      name="$2"
+      shift 2
+      ;;
+    -*)
+      echo "Unknown option: $1"
+      usage
+      ;;
+    *)
+      echo "Unexpected argument: $1"
+      usage
+      ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && {
+    echo "Error: --name is required"
+    usage
+  }
+
+  local vm_dir="$FC_VMS_DIR/$name"
+  local vsock_path="$vm_dir/v.sock"
+  local pidfile="$vm_dir/firecracker.pid"
+
+  if [[ ! -f "$pidfile" ]] || ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    echo "Error: VM '$name' is not running"
+    exit 1
+  fi
+
+  if [[ ! -S "$vsock_path" ]]; then
+    echo "Error: vsock socket not found at $vsock_path"
+    exit 1
+  fi
+
+  if [[ ! -f "$FC_SSH_KEY" ]]; then
+    echo "Error: SSH key not found at $FC_SSH_KEY"
+    echo "Run the Ansible playbook or: ssh-keygen -t ed25519 -f $FC_SSH_KEY -N '' -C fc-vm"
+    exit 1
+  fi
+
+  exec ssh \
+    -o "ProxyCommand=fc-vsock-ssh $vsock_path 22" \
+    -i "$FC_SSH_KEY" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o ServerAliveInterval=5 \
+    -o ServerAliveCountMax=3 \
+    root@localhost
 }
 
 # --- status ---
@@ -477,12 +598,15 @@ cmd_status() {
       pid=$(cat "$pidfile")
     fi
 
-    local taps="-"
+    local taps="-" vm_cid="-"
     if [[ -f "$vm_dir/tap_devices" ]]; then
       taps=$(paste -sd, "$vm_dir/tap_devices")
     fi
+    if [[ -f "$vm_dir/cid" ]]; then
+      vm_cid=$(cat "$vm_dir/cid")
+    fi
 
-    printf "%-20s %-10s pid=%-8s taps=%s\n" "$name" "$status" "$pid" "$taps"
+    printf "%-20s %-10s pid=%-8s cid=%-4s taps=%s\n" "$name" "$status" "$pid" "$vm_cid" "$taps"
   done
 
   if [[ "$found" == "false" ]]; then
@@ -505,6 +629,7 @@ case "$cmd" in
 build) cmd_build "$@" ;;
 start) cmd_start "$@" ;;
 stop) cmd_stop "$@" ;;
+connect) cmd_connect "$@" ;;
 status) cmd_status "$@" ;;
 *) usage ;;
 esac

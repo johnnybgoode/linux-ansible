@@ -28,7 +28,10 @@
     "track_dirty_pages": false
   },
   "balloon": null,
-  "vsock": null,
+  "vsock": {
+    "guest_cid": 3,
+    "uds_path": "/opt/firecracker/vms/example/v.sock"
+  },
   "logger": null,
   "metrics": null,
   "entropy": null
