@@ -1,8 +1,13 @@
 ARG BASE_IMAGE=ubuntu:24.04
 FROM ${BASE_IMAGE}
 
+USER root
+
 # Avoid interactive prompts during package install
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Ensure apt lists directory exists
+RUN mkdir -p /var/lib/apt/lists/partial
 
 # Install openssh-server if not already present
 RUN apt-get update -qq && \
