@@ -3,13 +3,51 @@ set -euo pipefail
 
 # SSH ProxyCommand for connecting to Firecracker VMs over vsock.
 #
-# Firecracker uses AF_UNIX sockets (not AF_VSOCK) on the host side,
-# with a text CONNECT handshake. This script bridges SSH through that.
+# Firecracker uses AF_UNIX sockets on the host side with a text CONNECT
+# handshake. This script handles the handshake, then relays SSH traffic
+# bidirectionally between stdin/stdout and the socket.
 #
 # Usage (as ProxyCommand):
 #   ssh -o "ProxyCommand=fc-vsock-ssh /path/to/v.sock 22" root@localhost
 
-UDS_PATH="${1:?Usage: fc-vsock-ssh <uds_path> [port]}"
-PORT="${2:-22}"
+exec python3 -c "
+import socket, sys, os, select
 
-exec socat - UNIX-CONNECT:"$UDS_PATH",connect-timeout=5 <<< "CONNECT $PORT"
+uds_path = sys.argv[1]
+port = int(sys.argv[2]) if len(sys.argv) > 2 else 22
+
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(uds_path)
+s.sendall(f'CONNECT {port}\n'.encode())
+
+# Consume the OK response before relaying
+buf = b''
+while b'\n' not in buf:
+    chunk = s.recv(1024)
+    if not chunk:
+        sys.exit(1)
+    buf += chunk
+
+# Bidirectional relay: stdin <-> socket
+stdin_fd = sys.stdin.fileno()
+stdout_fd = sys.stdout.fileno()
+os.set_blocking(stdin_fd, False)
+s.setblocking(False)
+
+try:
+    while True:
+        r, _, _ = select.select([stdin_fd, s], [], [])
+        for fd in r:
+            if fd == stdin_fd:
+                data = os.read(stdin_fd, 65536)
+                if not data:
+                    sys.exit(0)
+                s.sendall(data)
+            else:
+                data = s.recv(65536)
+                if not data:
+                    sys.exit(0)
+                os.write(stdout_fd, data)
+except (BrokenPipeError, ConnectionResetError, OSError):
+    pass
+" "$@"

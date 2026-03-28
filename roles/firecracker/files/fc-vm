@@ -193,13 +193,14 @@ cmd_build() {
       fi
 
       # Set up getty on serial console for a proper TTY
-      sudo mkdir -p "$mnt/etc/init.d"
-      sudo tee "$mnt/etc/init/ttyS0.conf" >/dev/null <<'GETTY'
+      if [[ -d "$mnt/etc/init" ]]; then
+        sudo tee "$mnt/etc/init/ttyS0.conf" >/dev/null <<'GETTY'
 start on stopped rc or RUNLEVEL=[2345]
 stop on RUNLEVEL=[!2345]
 respawn
 exec /sbin/getty -L ttyS0 115200 vt100
 GETTY
+      fi
       # Also add to inittab for sysvinit/busybox init
       if [[ -e "$mnt/etc/inittab" ]]; then
         echo 'ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100' | sudo tee -a "$mnt/etc/inittab" >/dev/null
@@ -224,7 +225,56 @@ GETTY
         echo "  ssh-keygen -t ed25519 -f $FC_SSH_KEY -N '' -C fc-vm"
       fi
 
-      # Install vsock-to-SSH relay service (bridges vsock port 22 to sshd)
+      # Install vsock-to-SSH relay (bridges vsock port 22 to sshd)
+      # Uses python3 to avoid socat dependency in the guest
+      sudo tee "$mnt/usr/local/bin/vsock-ssh-relay" >/dev/null <<'RELAY'
+#!/usr/bin/env python3
+"""Relay connections from vsock port 22 to localhost:22 (sshd)."""
+import socket, os, select, sys, signal
+
+VSOCK_PORT = 22
+SSH_PORT = 22
+
+def relay(client):
+    """Bidirectional relay between vsock client and local sshd."""
+    pid = os.fork()
+    if pid:
+        client.close()
+        return
+    # Child process handles this connection
+    try:
+        target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        target.connect(("127.0.0.1", SSH_PORT))
+        client.setblocking(False)
+        target.setblocking(False)
+        fds = [client, target]
+        while True:
+            r, _, _ = select.select(fds, [], [])
+            for fd in r:
+                data = fd.recv(65536)
+                if not data:
+                    raise ConnectionError
+                dest = target if fd == client else client
+                dest.sendall(data)
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        client.close()
+        target.close()
+        os._exit(0)
+
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind((socket.VMADDR_CID_ANY, VSOCK_PORT))
+sock.listen(8)
+while True:
+    client, _ = sock.accept()
+    relay(client)
+RELAY
+      sudo chmod 755 "$mnt/usr/local/bin/vsock-ssh-relay"
+
+      # Systemd service for the relay
       sudo mkdir -p "$mnt/etc/systemd/system/multi-user.target.wants"
       sudo tee "$mnt/etc/systemd/system/vsock-ssh-relay.service" >/dev/null <<'VSOCK'
 [Unit]
@@ -233,7 +283,7 @@ After=ssh.service sshd.service
 Wants=ssh.service
 
 [Service]
-ExecStart=/usr/bin/socat VSOCK-LISTEN:22,reuseaddr,fork TCP:localhost:22
+ExecStart=/usr/local/bin/vsock-ssh-relay
 Restart=always
 RestartSec=1
 
@@ -242,7 +292,7 @@ WantedBy=multi-user.target
 VSOCK
       sudo ln -sf ../vsock-ssh-relay.service \
         "$mnt/etc/systemd/system/multi-user.target.wants/vsock-ssh-relay.service"
-      echo "Installed vsock-ssh-relay systemd service"
+      echo "Installed vsock-ssh-relay service"
 
       sudo umount "$mnt"
       rmdir "$mnt"
