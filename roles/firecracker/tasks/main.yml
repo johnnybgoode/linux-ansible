@@ -34,13 +34,13 @@
 
 - name: Install firecracker and jailer binaries
   copy:
-    src: "/tmp/firecracker-extract/release-{{ firecracker_version }}-x86_64/{{ item }}"
-    dest: "/usr/local/bin/{{ item }}"
+    src: "/tmp/firecracker-extract/release-{{ firecracker_version }}-x86_64/{{ item.src }}"
+    dest: "/usr/local/bin/{{ item.dest }}"
     mode: '0755'
     remote_src: true
   loop:
-    - firecracker
-    - jailer
+    - { src: "firecracker-{{ firecracker_version }}-x86_64", dest: firecracker }
+    - { src: "jailer-{{ firecracker_version }}-x86_64", dest: jailer }
   when: firecracker_version not in (fc_current.stdout | default(''))
 
 - name: Clean up firecracker download
