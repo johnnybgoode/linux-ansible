@@ -1,0 +1,6 @@
+---
+- name: Base provisioning
+  hosts: all
+  become: false
+  roles:
+    - base

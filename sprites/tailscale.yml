@@ -1,0 +1,6 @@
+---
+- name: Tailscale provisioning
+  hosts: all
+  become: true
+  roles:
+    - tailscale

@@ -1,0 +1,11 @@
+#---
+#- name: Install Tailscale via official install script
+#  ansible.builtin.shell:
+#    cmd: curl -fsSL https://tailscale.com/install.sh | sh
+#    creates: /usr/bin/tailscale
+#
+#- name: Bring up Tailscale with authkey
+#  ansible.builtin.command:
+#    cmd: tailscale up --authkey {{ tailscale_authkey }} --hostname {{ sprite_name }}
+#  register: tailscale_up
+#  changed_when: tailscale_up.rc == 0

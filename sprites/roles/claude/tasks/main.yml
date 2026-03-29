@@ -1,0 +1,51 @@
+---
+- name: Ensure ~/.claude and ~/.claude/hooks exist
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - .claude
+    - .claude/hooks
+
+- name: Copy hooks to ~/.claude/hooks
+  ansible.builtin.copy:
+    src: hooks/
+    dest: "/home/{{ ansible_user }}/.claude/hooks/"
+    mode: "0755"
+
+- name: Write ~/.claude/settings.json
+  ansible.builtin.copy:
+    dest: "/home/{{ ansible_user }}/.claude/settings.json"
+    mode: "0644"
+    content: |
+      {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "node ~/.claude/hooks/block-dangerous.js"
+                }
+              ]
+            }
+          ],
+          "PostToolUse": [
+            {
+              "matcher": "Edit|Write",
+              "hooks": [
+                {
+                  "type": "command",
+                  "command": "bash .claude/hooks/auto-commit.sh"
+                }
+              ]
+            }
+          ]
+        },
+        "statusLine": {
+          "type": "command",
+          "command": "node ~/.claude/hooks/statusline.js"
+        }
+      }

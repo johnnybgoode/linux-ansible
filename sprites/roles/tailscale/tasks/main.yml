@@ -1,0 +1,31 @@
+- name: Install Tailscale
+  ansible.builtin.shell: |
+    curl -fsSL https://tailscale.com/install.sh | sh
+  args:
+    creates: /usr/bin/tailscale
+
+- name: Ensure tailscaled is started and enabled
+  ansible.builtin.systemd:
+    name: tailscaled
+    state: started
+    enabled: true
+
+- name: Bring up Tailscale with sprite tag
+  ansible.builtin.command: >
+    tailscale up
+    --auth-key={{ vault_tailscale_authkey }}
+    --advertise-tags=tag:sprite
+    --ssh
+  become: true
+
+- name: Verify Tailscale is connected
+  ansible.builtin.command: tailscale status
+  changed_when: false
+#- name: Check Tailscale status
+#  ansible.builtin.command: tailscale status --json
+#  register: ts_status
+#  changed_when: false
+#  failed_when: false
+#when: >
+#  ts_status.rc != 0 or
+#  (ts_status.stdout | from_json).BackendState != "Running"

@@ -1,0 +1,66 @@
+---
+- name: Set locale
+  locale_gen:
+    name: en_US.UTF-8
+    state: present
+
+#- name: Set default locale
+#  copy:
+#    dest: /etc/default/locale
+#    content: |
+#      LANG=en_US.UTF-8
+#      LC_ALL=en_US.UTF-8
+
+#- name: Set timezone
+#  timezone:
+#    name: America/New_York
+
+- name: Append QoL settings to .bashrc
+  ansible.builtin.blockinfile:
+    path: "{{ item }}"
+    block: |
+      # === LOCALE & UTF-8 ===
+      # Use C.UTF-8 (POSIX standard, available on minimal systems)
+      export LANG=C.UTF-8
+      export LC_ALL=C.UTF-8
+      export LC_CTYPE=C.UTF-8
+      export LC_COLLATE=C.UTF-8
+      export LC_TIME=C.UTF-8
+      export LC_NUMERIC=C.UTF-8
+      export LC_MONETARY=C.UTF-8
+      export LC_MESSAGES=C.UTF-8
+
+      # === TERMINAL CAPABILITIES ===
+      # Announce to tools that we support 256 colors + true color
+      export COLORTERM=truecolor
+      export TERM=tmux-256color
+
+      # === CLAUDE CODE SPECIFIC ===
+      # Ensure Claude Code detects a capable terminal
+      export FORCE_COLOR=1
+      export NO_COLOR=0
+
+      # === PAGER & LESS ===
+      # Better paging with color support
+      export PAGER=less
+      export LESS="-R -S -+X"
+
+      # === PAGER ===
+      export EDITOR=vim
+
+      # === OPTIONAL: ZSH-SPECIFIC (if using zsh) ===
+      # Enable bracketed paste mode (prevents issues with pasting code)
+      [[ $- == *i* ]] && printf '\e[?2004h'
+
+      # Enable extended glob patterns (useful for modern shell workflows)
+      setopt EXTENDED_GLOB 2>/dev/null || true
+
+      # === OPTIONAL: BASH-SPECIFIC (if using bash) ===
+      # Enable extended glob patterns
+      # shopt -s extglob 2>/dev/null || true
+    insertafter: EOF # Appends to the end of the file
+    create: true
+    marker: "# {mark} ANSIBLE ADDED"
+  loop:
+    - "{{ target_home }}/.bashrc"
+    - "{{ target_home }}/.zshrc"

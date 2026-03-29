@@ -1,0 +1,14 @@
+---
+- name: Full sprite provisioning
+  hosts: all
+  become: true
+  #vars_prompt:
+  #  - name: tailscale_authkey
+  #    prompt: "Tailscale authkey"
+  #    private: true
+  roles:
+    - base
+    - claude
+    - secrets
+    - tailscale
+    - tmux

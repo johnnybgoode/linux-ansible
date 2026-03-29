@@ -1,0 +1,4 @@
+sprite_name: engram
+project_name: engram
+target_user: "{{ lookup('env', 'USER') }}"
+target_home: "{{ lookup('env', 'HOME') }}"
