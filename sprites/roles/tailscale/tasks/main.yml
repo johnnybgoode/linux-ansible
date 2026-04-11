@@ -1,12 +1,16 @@
+- name: Wait for Tailscale package host DNS
+  ansible.builtin.command: nslookup pkgs.tailscale.com
+  changed_when: false
+  retries: 12
+  delay: 5
+  register: ts_dns
+  until: ts_dns.rc == 0
+
 - name: Install Tailscale
   ansible.builtin.shell: |
     curl -fsSL https://tailscale.com/install.sh | sh
   args:
     creates: /usr/bin/tailscale
-  retries: 3
-  delay: 10
-  register: tailscale_install
-  until: tailscale_install.rc == 0
 
 - name: Ensure tailscaled is started and enabled
   ansible.builtin.systemd:
