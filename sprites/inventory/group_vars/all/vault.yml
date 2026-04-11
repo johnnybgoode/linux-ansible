@@ -1,0 +1,8 @@
+# Shared default secrets for sprite provisioning.
+# Replace the placeholder values below with real credentials,
+# then encrypt this file:  ansible-vault encrypt sprites/inventory/group_vars/all/vault.yml
+vault_anthropic_api_key: "<shared-anthropic-key>"
+vault_gemini_api_key: "<shared-gemini-key>"
+vault_github_token: "<public-repo-PAT>"
+vault_open_ai_api_key: "<shared-openai-key>"
+vault_tailscale_authkey: "<shared-tailscale-authkey>"

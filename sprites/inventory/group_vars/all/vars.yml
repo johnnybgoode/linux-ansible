@@ -1,0 +1,5 @@
+# Connection defaults for all sprites (host_vars override these)
+ansible_connection: sprite
+ansible_user: sprite
+target_user: sprite
+target_home: /home/sprite
