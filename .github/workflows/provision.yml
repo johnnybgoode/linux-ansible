@@ -1,0 +1,43 @@
+# .github/workflows/provision.yml
+name: Provision Sprite
+
+on:
+  workflow_dispatch:
+    inputs:
+      sprite_name:
+        description: "Name of the sprite to provision"
+        required: true
+      repo_url:
+        description: "GitHub repo URL to clone (leave blank to init empty repo)"
+        required: false
+        default: ""
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    env:
+      SPRITE_TOKEN: ${{ secrets.SPRITE_TOKEN }}
+
+    steps:
+      - name: Checkout playbooks
+        uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Install sprite CLI
+        run: |
+          curl -fsSL https://sprites.dev/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run provisioning playbook
+        working-directory: sprites
+        env:
+          SPRITE_NAME: ${{ inputs.sprite_name }}
+          REPO_URL: ${{ inputs.repo_url }}
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          ansible-playbook provision.yml \
+            -i "$SPRITE_NAME," \
+            -e "ansible_connection=sprite repo_url=$REPO_URL" \
+            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD")
