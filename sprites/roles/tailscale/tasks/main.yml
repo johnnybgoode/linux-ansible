@@ -23,11 +23,16 @@
     state: present
     update_cache: true
 
-- name: Ensure tailscaled is started and enabled
-  ansible.builtin.systemd:
-    name: tailscaled
-    state: started
-    enabled: true
+- name: Start tailscaled
+  ansible.builtin.shell: |
+    if pgrep -x tailscaled > /dev/null; then
+      echo "already running"
+    else
+      tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock &
+      sleep 2
+    fi
+  changed_when: "'already running' not in tailscaled_start.stdout"
+  register: tailscaled_start
 
 - name: Bring up Tailscale with sprite tag
   ansible.builtin.command: >
