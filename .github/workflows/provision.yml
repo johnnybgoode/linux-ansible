@@ -1,5 +1,6 @@
 # .github/workflows/provision.yml
 name: Provision Sprite
+run-name: "Provision: ${{ inputs.sprite_name }}"
 
 on:
   workflow_dispatch:
