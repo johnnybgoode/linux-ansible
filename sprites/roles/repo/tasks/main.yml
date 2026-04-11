@@ -1,0 +1,22 @@
+---
+- name: Check if project directory exists
+  ansible.builtin.stat:
+    path: "{{ target_home }}/project"
+  register: project_dir
+
+- name: Clone repo into ~/project
+  ansible.builtin.git:
+    repo: "{{ repo_url }}"
+    dest: "{{ target_home }}/project"
+    version: HEAD
+  when:
+    - repo_url | default('') != ''
+    - not project_dir.stat.exists
+
+- name: Init blank git repo at ~/project
+  ansible.builtin.command:
+    cmd: git init "{{ target_home }}/project"
+    creates: "{{ target_home }}/project/.git"
+  when:
+    - repo_url | default('') == ''
+    - not project_dir.stat.exists
