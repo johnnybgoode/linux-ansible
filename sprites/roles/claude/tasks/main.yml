@@ -15,37 +15,7 @@
     mode: "0755"
 
 - name: Write ~/.claude/settings.json
-  ansible.builtin.copy:
+  ansible.builtin.template:
+    src: settings.json.j2
     dest: "/home/{{ ansible_user }}/.claude/settings.json"
     mode: "0644"
-    content: |
-      {
-        "hooks": {
-          "PreToolUse": [
-            {
-              "matcher": "Bash",
-              "hooks": [
-                {
-                  "type": "command",
-                  "command": "node ~/.claude/hooks/block-dangerous.js"
-                }
-              ]
-            }
-          ],
-          "PostToolUse": [
-            {
-              "matcher": "Edit|Write",
-              "hooks": [
-                {
-                  "type": "command",
-                  "command": "bash .claude/hooks/auto-commit.sh"
-                }
-              ]
-            }
-          ]
-        },
-        "statusLine": {
-          "type": "command",
-          "command": "node ~/.claude/hooks/statusline.js"
-        }
-      }

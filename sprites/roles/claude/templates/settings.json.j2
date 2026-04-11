@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/.claude/hooks/block-dangerous.js"
+          }
+        ]
+      }
+    ]{% if 'engram' in inventory_hostname %},
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/auto-commit.sh"
+          }
+        ]
+      }
+    ]{% endif %}
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node ~/.claude/hooks/statusline.js"
+  },
+  "plugins": ["superpowers", "context7"]
+}

@@ -8,8 +8,10 @@
   #    private: true
   roles:
     - base
+    - node
     - claude
     - secrets
     - tailscale
     - tmux
     - repo
+    - remote-control

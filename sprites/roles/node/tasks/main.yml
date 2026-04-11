@@ -1,0 +1,13 @@
+---
+- name: Install Node.js
+  ansible.builtin.apt:
+    name:
+      - nodejs
+      - npm
+    state: present
+    update_cache: true
+
+- name: Install global TypeScript packages
+  ansible.builtin.shell: npm install -g typescript typescript-language-server
+  args:
+    creates: /usr/local/bin/tsc

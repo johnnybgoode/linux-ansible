@@ -1,0 +1,19 @@
+---
+- name: Write start-rc.sh
+  ansible.builtin.copy:
+    dest: "/home/{{ target_user }}/start-rc.sh"
+    mode: "0755"
+    owner: "{{ target_user }}"
+    content: |
+      #!/bin/bash
+      # Start Claude Code in remote-control mode inside tmux
+      REPO_DIR="$HOME/project"
+      TMUX_ARGS=(-d -s claude)
+
+      # Only set working directory if project repo exists
+      if [ -d "$REPO_DIR" ]; then
+        TMUX_ARGS+=(-c "$REPO_DIR")
+      fi
+
+      tmux new-session "${TMUX_ARGS[@]}" \
+        'claude --dangerously-skip-permissions --remote-control'
