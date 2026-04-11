@@ -1,4 +1,15 @@
 ---
+- name: Wait for outbound connectivity
+  ansible.builtin.uri:
+    url: https://deb.debian.org
+    method: HEAD
+    status_code: [200, 301, 302]
+    timeout: 5
+  register: connectivity
+  retries: 12
+  delay: 5
+  until: connectivity is success
+
 - name: Set locale
   locale_gen:
     name: en_US.UTF-8

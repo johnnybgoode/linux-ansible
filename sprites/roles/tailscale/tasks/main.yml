@@ -3,6 +3,10 @@
     curl -fsSL https://tailscale.com/install.sh | sh
   args:
     creates: /usr/bin/tailscale
+  retries: 3
+  delay: 10
+  register: tailscale_install
+  until: tailscale_install.rc == 0
 
 - name: Ensure tailscaled is started and enabled
   ansible.builtin.systemd:
