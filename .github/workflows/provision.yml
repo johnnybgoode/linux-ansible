@@ -38,6 +38,7 @@ jobs:
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
         run: |
           ansible-playbook provision.yml \
-            -i "$SPRITE_NAME," \
-            -e "ansible_connection=sprite repo_url=$REPO_URL" \
+            -i inventory/ -i "$SPRITE_NAME," \
+            --limit "$SPRITE_NAME" \
+            -e "repo_url=$REPO_URL" \
             --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD")
