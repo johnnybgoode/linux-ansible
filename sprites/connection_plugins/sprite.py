@@ -17,10 +17,12 @@ DOCUMENTATION = """
       - Transfers files using C(sprite exec --file).
     options:
       sprite_name:
-        description: Name of the target Sprite.
+        description:
+          - Name of the target Sprite.
+          - Defaults to the inventory hostname (ansible_host) when not set.
         vars:
           - name: sprite_name
-        required: true
+        required: false
       sprite_org:
         description: Sprites organization name (optional).
         vars:
@@ -49,7 +51,8 @@ class Connection(ConnectionBase):
     return cmd
 
   def _connect(self):
-    self._sprite_name = self.get_option("sprite_name")
+    sprite_name = self.get_option("sprite_name")
+    self._sprite_name = sprite_name or self._play_context.remote_addr
     self._sprite_org = self.get_option("sprite_org")
     display.vvv(f"SPRITE connect: {self._sprite_name}", host=self._sprite_name)
     return self
