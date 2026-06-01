@@ -1,0 +1,6 @@
+---
+# Git identity for the target user. Override per-sprite in host_vars
+# (e.g. inventory/host_vars/<sprite>/vars.yml). Left empty by default so
+# the identity tasks are skipped rather than committing a bogus identity.
+git_user_name: ""
+git_user_email: ""

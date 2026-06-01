@@ -1,0 +1,8 @@
+---
+# Install with: ansible-galaxy collection install -r requirements.yml
+collections:
+  # Provides community.general.git_config, used by the `git` role to write
+  # the user's global git config (identity, credential helper, safe.directory).
+  # 7.1.0+ is required for git_config's `add_mode: add`.
+  - name: community.general
+    version: ">=7.1.0"
