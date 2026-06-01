@@ -2,7 +2,3 @@ sprite_name: engram
 project_name: engram
 target_user: "{{ lookup('env', 'USER') }}"
 target_home: "{{ lookup('env', 'HOME') }}"
-
-# Git identity for commits made on this sprite (consumed by the git role).
-git_user_name: "John Entwistle"
-git_user_email: "j.entwistle76@gmail.com"

@@ -37,9 +37,17 @@ jobs:
           SPRITE_NAME: ${{ inputs.sprite_name }}
           REPO_URL: ${{ inputs.repo_url }}
           ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          # Committer identity for git on the sprite. Set these as repo-level
+          # Actions variables (Settings > Secrets and variables > Actions >
+          # Variables). If unset they pass through empty and the git role
+          # skips identity config rather than committing a bogus identity.
+          GIT_USER_NAME: ${{ vars.GIT_USER_NAME }}
+          GIT_USER_EMAIL: ${{ vars.GIT_USER_EMAIL }}
         run: |
           ansible-playbook provision.yml \
             -i inventory/ -i "$SPRITE_NAME," \
             --limit "$SPRITE_NAME" \
             -e "repo_url=$REPO_URL" \
+            -e "git_user_name=$GIT_USER_NAME" \
+            -e "git_user_email=$GIT_USER_EMAIL" \
             --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD")
