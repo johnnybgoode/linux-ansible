@@ -1,0 +1,7 @@
+---
+# Git identity for the target user. Injected at provision time as extra-vars
+# by the GitHub Actions workflow from the GIT_USER_NAME / GIT_USER_EMAIL repo
+# variables (can also be set per-sprite in host_vars). Left empty by default
+# so the identity tasks are skipped rather than committing a bogus identity.
+git_user_name: ""
+git_user_email: ""

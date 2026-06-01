@@ -1,0 +1,49 @@
+---
+# Configure git for the interactive user. provision.yml runs with
+# `become: true`, so the repo role clones ~/project as root; this role
+# reclaims ownership and writes the user's global git config (identity +
+# credential helper + safe.directory) as {{ target_user }}, not root.
+
+- name: Ensure ~/project is owned by the target user
+  ansible.builtin.file:
+    path: "{{ target_home }}/project"
+    state: directory
+    owner: "{{ target_user }}"
+    group: "{{ target_user }}"
+    recurse: true
+
+- name: Configure git identity for the target user
+  community.general.git_config:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    scope: global
+  become: true
+  become_user: "{{ target_user }}"
+  loop:
+    - { name: "user.name", value: "{{ git_user_name }}" }
+    - { name: "user.email", value: "{{ git_user_email }}" }
+  when:
+    - git_user_name | length > 0
+    - git_user_email | length > 0
+
+- name: Mark ~/project as a safe git directory
+  # Belt-and-suspenders: ownership is fixed above, but this protects against
+  # any path that has to stay root-owned ("detected dubious ownership").
+  community.general.git_config:
+    name: safe.directory
+    value: "{{ target_home }}/project"
+    scope: global
+    add_mode: add
+  become: true
+  become_user: "{{ target_user }}"
+
+- name: Configure git credential helper to use $GH_TOKEN for github.com
+  # Reads $GH_TOKEN (written to ~/.env by the secrets role) at git runtime,
+  # so nothing extra is stored on disk. The leading '!' makes git run this
+  # as a shell command; $GH_TOKEN is expanded by the shell, not by Ansible.
+  community.general.git_config:
+    name: "credential.https://github.com.helper"
+    value: '!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f'
+    scope: global
+  become: true
+  become_user: "{{ target_user }}"
